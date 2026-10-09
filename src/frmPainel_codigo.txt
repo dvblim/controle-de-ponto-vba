@@ -1,0 +1,971 @@
+Option Explicit
+
+' =====================================================================
+'  frmPainel - painel do controle de ponto
+'  Todos os controles são criados em runtime (MontarLayout) e os
+'  eventos ficam nos módulos de classe:
+'    clsBotao   -> botões          (chama Acao)
+'    clsMesCard -> cartões de mês  (chama AlternarMes)
+'    clsCampo   -> campos          (chama DataMudou / CamposMudaram / Acao)
+'    clsLista   -> lista de dias   (chama DiaSelecionado)
+'  Regras em clsRegra, dados em clsRegistros/clsDia, feriados em clsFeriados.
+' =====================================================================
+
+Private Const LARG As Single = 800
+Private Const ALT As Single = 460
+Private Const TOPO_VISAO As Single = 198
+
+' barras "Saldo por mês"
+Private Const BAR_CENTRO As Single = 248
+Private Const BAR_MEIO As Single = 168
+Private Const BAR_Y As Single = 96
+Private Const BAR_PASSO As Single = 13
+
+' feriados
+Private Const FER_Y As Single = 96
+Private Const FER_PASSO As Single = 13
+Private Const FER_MAX As Long = 7
+
+Private mRegra As clsRegra
+Private mRegs As clsRegistros
+Private mFer As clsFeriados
+Private mMarcados As Object          ' "aaaa-mm" -> True
+Private mAno As Long
+Private mViewDias As Boolean
+Private mCarregando As Boolean
+Private mObjs As Collection          ' mantém vivas as classes de eventos
+Private mCards(1 To 12) As clsMesCard
+Private mBtnVerDias As clsBotao
+Private mListaDatas() As Date
+Private mListaN As Long
+
+' lançamento
+Private txtData As MSForms.TextBox
+Private cboTipo As MSForms.ComboBox
+Private txtEnt As MSForms.TextBox
+Private txtSai As MSForms.TextBox
+Private txtRet As MSForms.TextBox
+Private txtFim As MSForms.TextBox
+Private txtObs As MSForms.TextBox
+Private lblSub As MSForms.Label
+Private lblSug As MSForms.Label
+Private lblMsg As MSForms.Label
+Private lblAno As MSForms.Label
+
+' visões
+Private fraPainel As MSForms.Frame
+Private fraDias As MSForms.Frame
+
+' indicadores
+Private lblK1v As MSForms.Label
+Private lblK1s As MSForms.Label
+Private lblK2p As MSForms.Label
+Private lblK2b As MSForms.Label
+Private lblK2n As MSForms.Label
+Private lblK2s As MSForms.Label
+Private lblK3v As MSForms.Label
+Private lblK3s As MSForms.Label
+Private lblK4v As MSForms.Label
+Private lblK4s As MSForms.Label
+
+' barras
+Private lblBarNome(1 To 12) As MSForms.Label
+Private lblBar(1 To 12) As MSForms.Label
+Private lblBarVal(1 To 12) As MSForms.Label
+Private lblEixo As MSForms.Label
+Private lblBarVazio As MSForms.Label
+
+' feriados
+Private lblFerD(1 To 7) As MSForms.Label
+Private lblFerN(1 To 7) As MSForms.Label
+Private lblFerVazio As MSForms.Label
+Private lblProxT As MSForms.Label
+Private lblProxD(1 To 3) As MSForms.Label
+Private lblProxN(1 To 3) As MSForms.Label
+
+' lista de dias
+Private lstDias As MSForms.ListBox
+Private lblDiasInfo As MSForms.Label
+
+' =====================================================================
+'  Abertura e fechamento
+' =====================================================================
+
+Private Sub UserForm_Initialize()
+    mCarregando = True
+    Set mObjs = New Collection
+    Set mMarcados = CreateObject("Scripting.Dictionary")
+
+    Set mRegra = New clsRegra
+    mRegra.Carregar ThisWorkbook
+    Set mFer = New clsFeriados
+    mFer.Inicializar ThisWorkbook
+    Set mRegs = New clsRegistros
+    mRegs.Carregar mRegra
+
+    mAno = Year(Date)
+    MontarLayout
+    MarcarMesesComDados
+
+    txtData.Text = FmtData(Date)
+    CarregarCampos Date
+    mCarregando = False
+
+    AtualizarTudo
+    AtualizarSugestao
+End Sub
+
+Private Sub UserForm_QueryClose(Cancel As Integer, CloseMode As Integer)
+    ' quebra as referências circulares classe <-> formulário
+    Dim i As Long
+    Set mObjs = Nothing
+    For i = 1 To 12
+        Set mCards(i) = Nothing
+    Next i
+    Set mBtnVerDias = Nothing
+End Sub
+
+' =====================================================================
+'  Layout
+' =====================================================================
+
+Private Sub MontarLayout()
+    Dim c As Object, cp As Object, cd As Object
+    Dim i As Long, x As Single, y As Single, lb As MSForms.Label
+    Dim larguras As Variant, titulos As Variant, cw As String
+
+    Me.Caption = "Controle de ponto"
+    Me.BackColor = COR_FUNDO
+    Me.Width = LARG + (Me.Width - Me.InsideWidth)
+    Me.Height = ALT + (Me.Height - Me.InsideHeight)
+    Set c = Me.Controls
+
+    ' ---------- topo ----------
+    NovoLabel c, "", 0, 0, LARG, 42, 9, False, COR_TEXTO, COR_TOPO
+    NovoLabel c, "Controle de ponto", 12, 5, 290, 19, 12, True, COR_TEXTO, COR_TOPO
+    Set lblSub = NovoLabel(c, "", 12, 24, 440, 13, 8, False, COR_MUTED, COR_TOPO)
+    Set mBtnVerDias = NovoBotao(c, "verdias", "Ver dias dos meses marcados", 460, 10, 150, 22)
+    NovoBotao c, "todos", "Marcar todos", 616, 10, 80, 22
+    NovoBotao c, "limpar", "Limpar seleção", 702, 10, 86, 22
+
+    ' ---------- lançar ponto ----------
+    NovoLabel c, "Lançar ponto", 12, 50, 200, 16, 10, True
+    y = 70
+    NovoLabel c, "Data", 12, y, 84, 12, 8.5, False, COR_MUTED
+    NovoLabel c, "Tipo", 102, y, 80, 12, 8.5, False, COR_MUTED
+    NovoLabel c, "Entrada", 188, y, 62, 12, 8.5, False, COR_MUTED
+    NovoLabel c, "Saída alm.", 256, y, 62, 12, 8.5, False, COR_MUTED
+    NovoLabel c, "Retorno", 324, y, 62, 12, 8.5, False, COR_MUTED
+    NovoLabel c, "Saída", 392, y, 62, 12, 8.5, False, COR_MUTED
+    NovoLabel c, "Observação", 460, y, 172, 12, 8.5, False, COR_MUTED
+
+    y = 84
+    Set txtData = NovoTexto(c, 12, y, 84, 22, "data")
+    Set cboTipo = NovoComboBox(c, 102, y, 80, 22, 10)
+    cboTipo.AddItem "Normal"
+    cboTipo.AddItem "Feriado"
+    cboTipo.AddItem "Folga"
+    cboTipo.AddItem "Atestado"
+    cboTipo.AddItem "Falta"
+    cboTipo.ListRows = 5
+    cboTipo.Value = "Normal"
+    NovoCampoCombo cboTipo
+    Set txtEnt = NovoTexto(c, 188, y, 62, 22, "hora")
+    Set txtSai = NovoTexto(c, 256, y, 62, 22, "hora")
+    Set txtRet = NovoTexto(c, 324, y, 62, 22, "hora")
+    Set txtFim = NovoTexto(c, 392, y, 62, 22, "hora")
+    Set txtObs = NovoTexto(c, 460, y, 172, 22, "texto")
+    NovoBotao c, "agora", "Agora", 638, y, 48, 22
+    NovoBotao c, "salvar", "Salvar", 690, y, 50, 22, COR_AZUL_BTN, COR_BRANCO, COR_AZUL_BTN
+    NovoBotao c, "excluir", "Excluir", 744, y, 44, 22
+
+    Set lblSug = NovoLabel(c, "", 12, 112, 560, 14, 9, False, COR_TEXTO)
+    Set lblMsg = NovoLabel(c, "", 580, 112, 208, 14, 8.5, False, COR_MUTED, , fmTextAlignRight)
+
+    ' ---------- meses ----------
+    Set lb = NovoLabel(c, "Meses que entram na conta", 12, 134, 100, 14, 9, True)
+    lb.AutoSize = True
+    x = lb.Left + lb.Width + 2
+    Set lb = NovoLabel(c, SEP & "clique para marcar" & SEP & "ano", x, 134, 100, 14, 9, False, COR_MUTED)
+    lb.AutoSize = True
+    x = lb.Left + lb.Width + 6
+    NovoBotao c, "anoAnt", ChrW(&H2039), x, 132, 18, 18
+    Set lblAno = NovoLabel(c, "", x + 20, 134, 34, 14, 9, True, COR_TEXTO, , fmTextAlignCenter)
+    NovoBotao c, "anoProx", ChrW(&H203A), x + 56, 132, 18, 18
+
+    For i = 1 To 12
+        Set mCards(i) = New clsMesCard
+        x = 12 + (i - 1) * 65
+        mCards(i).Criar Me, c, i, x, 152, 60, 36
+    Next i
+
+    ' ---------- visão painel ----------
+    Set fraPainel = NovoFrame(c, 0, TOPO_VISAO, LARG, ALT - TOPO_VISAO)
+    Set cp = fraPainel.Controls
+
+    NovoCartao cp, 12, 0, 188, 62, COR_AZUL_BORDA
+    NovoLabel cp, "Saldo dos meses marcados", 22, 5, 172, 14, 9, False, COR_TEXTO, COR_CARD
+    Set lblK1v = NovoLabel(cp, "", 22, 19, 172, 26, 16, True, COR_VERDE, COR_CARD)
+    Set lblK1s = NovoLabel(cp, "", 22, 45, 172, 13, 8, False, COR_MUTED, COR_CARD)
+
+    NovoCartao cp, 208, 0, 188, 62
+    NovoLabel cp, "Positivas / negativas", 218, 5, 172, 14, 9, False, COR_TEXTO, COR_CARD
+    Set lblK2p = NovoLabel(cp, "", 218, 20, 40, 24, 14, True, COR_VERDE, COR_CARD)
+    lblK2p.AutoSize = True
+    Set lblK2b = NovoLabel(cp, "/", 258, 20, 10, 24, 14, True, COR_TEXTO, COR_CARD)
+    lblK2b.AutoSize = True
+    Set lblK2n = NovoLabel(cp, "", 270, 20, 40, 24, 14, True, COR_VERMELHO, COR_CARD)
+    lblK2n.AutoSize = True
+    Set lblK2s = NovoLabel(cp, "", 218, 45, 172, 13, 8, False, COR_MUTED, COR_CARD)
+
+    NovoCartao cp, 404, 0, 188, 62
+    NovoLabel cp, "Trabalhado", 414, 5, 172, 14, 9, False, COR_TEXTO, COR_CARD
+    Set lblK3v = NovoLabel(cp, "", 414, 19, 172, 26, 16, True, COR_TEXTO, COR_CARD)
+    Set lblK3s = NovoLabel(cp, "", 414, 45, 172, 13, 8, False, COR_MUTED, COR_CARD)
+
+    NovoCartao cp, 600, 0, 188, 62
+    NovoLabel cp, "Banco total", 610, 5, 172, 14, 9, False, COR_TEXTO, COR_CARD
+    Set lblK4v = NovoLabel(cp, "", 610, 19, 172, 26, 16, True, COR_VERDE, COR_CARD)
+    Set lblK4s = NovoLabel(cp, "", 610, 45, 172, 13, 8, False, COR_MUTED, COR_CARD)
+
+    ' saldo por mês
+    NovoCartao cp, 12, 72, 480, 186
+    NovoLabel cp, "Saldo por mês marcado", 22, 78, 200, 14, 9, True, COR_TEXTO, COR_CARD
+    Set lblEixo = NovoLabel(cp, "", BAR_CENTRO, BAR_Y - 2, 1, 12 * BAR_PASSO, 9, False, COR_TEXTO, COR_BORDA)
+    For i = 1 To 12
+        y = BAR_Y + (i - 1) * BAR_PASSO
+        Set lblBarNome(i) = NovoLabel(cp, "", 22, y, 50, 12, 8.5, False, COR_TEXTO, COR_CARD)
+        Set lblBar(i) = NovoLabel(cp, "", BAR_CENTRO + 1, y + 1, 10, 10, 8, False, COR_TEXTO, COR_BARRA_POS)
+        Set lblBarVal(i) = NovoLabel(cp, "", 424, y, 60, 12, 8.5, False, COR_VERDE, COR_CARD, fmTextAlignRight)
+    Next i
+    Set lblBarVazio = NovoLabel(cp, "Marque um ou mais meses acima.", 22, BAR_Y, 460, 14, 9, False, COR_MUTED, COR_CARD)
+
+    ' feriados
+    NovoCartao cp, 500, 72, 288, 186
+    NovoLabel cp, "Feriados nos meses marcados", 510, 78, 260, 14, 9, True, COR_TEXTO, COR_CARD
+    For i = 1 To FER_MAX
+        y = FER_Y + (i - 1) * FER_PASSO
+        Set lblFerD(i) = NovoLabel(cp, "", 510, y, 60, 13, 8.5, False, COR_TEXTO, COR_CARD)
+        Set lblFerN(i) = NovoLabel(cp, "", 570, y, 208, 13, 8.5, False, COR_TEXTO, COR_CARD, fmTextAlignRight)
+    Next i
+    Set lblFerVazio = NovoLabel(cp, "Nenhum feriado nos meses marcados.", 510, FER_Y, 268, 13, 8.5, False, COR_MUTED, COR_CARD)
+    Set lblProxT = NovoLabel(cp, "Próximos", 510, 200, 100, 13, 8.5, False, COR_MUTED, COR_CARD)
+    For i = 1 To 3
+        Set lblProxD(i) = NovoLabel(cp, "", 510, 216, 60, 13, 8.5, False, COR_MUTED, COR_CARD)
+        Set lblProxN(i) = NovoLabel(cp, "", 570, 216, 208, 13, 8.5, False, COR_MUTED, COR_CARD, fmTextAlignRight)
+    Next i
+
+    ' ---------- visão dias ----------
+    Set fraDias = NovoFrame(c, 0, TOPO_VISAO, LARG, ALT - TOPO_VISAO)
+    fraDias.Visible = False
+    Set cd = fraDias.Controls
+
+    larguras = Array(64, 36, 62, 52, 60, 56, 52, 52, 66, 56, 66, 120)
+    titulos = Array("Data", "Dia", "Tipo", "Entrada", "Saída alm.", "Retorno", "Saída", _
+                    "Almoço", "Trabalhado", "Banco", "Acumulado", "Status")
+    x = 16
+    cw = ""
+    For i = 0 To 11
+        NovoLabel cd, CStr(titulos(i)), x, 0, CSng(larguras(i)), 13, 8.5, True, COR_MUTED
+        x = x + larguras(i)
+        If cw <> "" Then cw = cw & ";"
+        cw = cw & CStr(larguras(i))
+    Next i
+    Set lstDias = NovoListBox(cd, 12, 16, 776, 224)
+    lstDias.ColumnCount = 12
+    lstDias.ColumnWidths = cw
+    NovaLista lstDias
+    Set lblDiasInfo = NovoLabel(cd, "", 12, 244, 776, 13, 8.5, False, COR_MUTED)
+End Sub
+
+' ---------- fábricas que ligam controles às classes de eventos ----------
+
+Private Function NovoBotao(ByVal ctls As Object, ByVal chave As String, ByVal texto As String, _
+                           ByVal x As Single, ByVal y As Single, ByVal w As Single, ByVal h As Single, _
+                           Optional ByVal corFundo As Long = COR_BOTAO, Optional ByVal corTexto As Long = COR_TEXTO, _
+                           Optional ByVal corBorda As Long = COR_BORDA) As clsBotao
+    Dim b As clsBotao
+    Set b = New clsBotao
+    b.Criar Me, ctls, chave, texto, x, y, w, h, corFundo, corTexto, corBorda
+    mObjs.Add b
+    Set NovoBotao = b
+End Function
+
+Private Function NovoTexto(ByVal ctls As Object, ByVal x As Single, ByVal y As Single, _
+                           ByVal w As Single, ByVal h As Single, ByVal tipo As String) As MSForms.TextBox
+    Dim t As MSForms.TextBox, cpo As clsCampo
+    Set t = NovoTextBox(ctls, x, y, w, h, 10)
+    If tipo = "hora" Then
+        t.MaxLength = 5
+        t.TextAlign = fmTextAlignCenter
+    ElseIf tipo = "data" Then
+        t.MaxLength = 10
+    End If
+    Set cpo = New clsCampo
+    cpo.InitTexto Me, t, tipo
+    mObjs.Add cpo
+    Set NovoTexto = t
+End Function
+
+Private Sub NovoCampoCombo(ByVal cb As MSForms.ComboBox)
+    Dim cpo As clsCampo
+    Set cpo = New clsCampo
+    cpo.InitCombo Me, cb
+    mObjs.Add cpo
+End Sub
+
+Private Sub NovaLista(ByVal l As MSForms.ListBox)
+    Dim li As clsLista
+    Set li = New clsLista
+    li.Init Me, l
+    mObjs.Add li
+End Sub
+
+' =====================================================================
+'  Chamados pelas classes de eventos
+' =====================================================================
+
+Public Sub Acao(ByVal chave As String)
+    Dim i As Long
+    Select Case chave
+        Case "salvar"
+            Salvar
+        Case "agora"
+            BaterAgora
+        Case "excluir"
+            ExcluirDia
+        Case "verdias"
+            AlternarVisao
+        Case "todos"
+            For i = 1 To 12
+                mMarcados(ChaveAnoMes(i)) = True
+            Next i
+            AtualizarTudo
+        Case "limpar"
+            mMarcados.RemoveAll
+            AtualizarTudo
+        Case "anoAnt"
+            mAno = mAno - 1
+            AtualizarTudo
+        Case "anoProx"
+            mAno = mAno + 1
+            AtualizarTudo
+    End Select
+End Sub
+
+Public Sub AlternarMes(ByVal mes As Long)
+    Dim k As String
+    k = ChaveAnoMes(mes)
+    If mMarcados.Exists(k) Then
+        mMarcados.Remove k
+    Else
+        mMarcados.Add k, True
+    End If
+    AtualizarTudo
+End Sub
+
+Public Sub DataMudou()
+    Dim d As Date
+    If mCarregando Then Exit Sub
+    If Len(Trim$(txtData.Text)) < 10 Then
+        AtualizarSugestao
+        Exit Sub
+    End If
+    d = LerData(txtData.Text)
+    If d = 0 Then
+        Msg "Data inválida.", COR_VERMELHO
+        Exit Sub
+    End If
+    mCarregando = True
+    CarregarCampos d
+    mCarregando = False
+    Msg ""
+    AtualizarSugestao
+End Sub
+
+Public Sub CamposMudaram()
+    If mCarregando Then Exit Sub
+    AtualizarSugestao
+End Sub
+
+Public Sub DiaSelecionado(ByVal idx As Long)
+    If mCarregando Then Exit Sub
+    If idx < 0 Or idx >= mListaN Then Exit Sub
+    MostrarDia mListaDatas(idx)
+    Msg "Dia " & Format$(mListaDatas(idx), "dd\/mm") & " carregado.", COR_MUTED
+End Sub
+
+' =====================================================================
+'  Lançamento
+' =====================================================================
+
+Private Sub MostrarDia(ByVal d As Date)
+    mCarregando = True
+    txtData.Text = FmtData(d)
+    CarregarCampos d
+    mCarregando = False
+    AtualizarSugestao
+End Sub
+
+Private Sub CarregarCampos(ByVal d As Date)
+    Dim dia As clsDia, fer As String
+    Set dia = mRegs.DiaPorData(d)
+    If dia Is Nothing Then
+        fer = mFer.Nome(d)
+        If fer <> "" And InStr(fer, "facultativo") = 0 Then
+            cboTipo.Value = "Feriado"
+        Else
+            cboTipo.Value = "Normal"
+        End If
+        txtEnt.Text = ""
+        txtSai.Text = ""
+        txtRet.Text = ""
+        txtFim.Text = ""
+        txtObs.Text = fer
+    Else
+        cboTipo.Value = TipoValido(dia.Tipo)
+        txtEnt.Text = HoraOuVazio(dia.Entrada)
+        txtSai.Text = HoraOuVazio(dia.SaidaAlm)
+        txtRet.Text = HoraOuVazio(dia.Retorno)
+        txtFim.Text = HoraOuVazio(dia.Saida)
+        txtObs.Text = dia.Obs
+    End If
+End Sub
+
+Private Function TipoValido(ByVal t As String) As String
+    Select Case t
+        Case "Normal", "Feriado", "Folga", "Atestado", "Falta"
+            TipoValido = t
+        Case Else
+            TipoValido = "Normal"
+    End Select
+End Function
+
+Private Function TipoAtual() As String
+    TipoAtual = TipoValido(cboTipo.Text)
+End Function
+
+Private Function HoraCampo(ByVal t As MSForms.TextBox) As Long
+    ' -1 se vazio ou ainda incompleto/inválido (para a prévia)
+    HoraCampo = LerHora(t.Text)
+    If HoraCampo < 0 Then HoraCampo = -1
+End Function
+
+Private Sub AtualizarSugestao()
+    Dim d As Date, e As Long, sa As Long, r As Long, s As Long
+    Dim alm As Long, sug As Long, trab As Long, dif As Long, banco As Long
+    Dim tol As Long, prefixo As String, txt As String, tipo As String
+
+    If lblSug Is Nothing Then Exit Sub
+    lblSug.ForeColor = COR_TEXTO
+    d = LerData(txtData.Text)
+    tipo = TipoAtual()
+    tol = mRegra.TolMin
+
+    Select Case tipo
+        Case "Falta"
+            lblSug.Caption = "Falta: desconta " & FmtHM(mRegra.JornadaMin) & " do banco."
+            lblSug.ForeColor = COR_VERMELHO
+            Exit Sub
+        Case "Feriado", "Folga", "Atestado"
+            lblSug.Caption = tipo & ": o dia não altera o banco."
+            Exit Sub
+    End Select
+
+    e = HoraCampo(txtEnt)
+    sa = HoraCampo(txtSai)
+    r = HoraCampo(txtRet)
+    s = HoraCampo(txtFim)
+
+    If e < 0 Then
+        lblSug.Caption = "Preencha a entrada para ver a saída sugerida."
+        lblSug.ForeColor = COR_MUTED
+        Exit Sub
+    End If
+
+    If sa >= 0 And r >= 0 Then
+        alm = r - sa
+        If alm < 0 Then
+            lblSug.Caption = "O retorno do almoço está antes da saída para o almoço."
+            lblSug.ForeColor = COR_VERMELHO
+            Exit Sub
+        End If
+    Else
+        alm = mRegra.AlmocoPadraoMin
+    End If
+
+    If sa >= 0 And r >= 0 And s >= 0 Then
+        ' dia fechado: mostra o resultado
+        trab = mRegra.Trabalhado(e, sa, r, s)
+        dif = trab - mRegra.JornadaMin
+        banco = mRegra.BancoDia("Normal", trab, True)
+        txt = "Trabalhado " & FmtHM(trab) & SEP & "diferença " & FmtHM(dif, True) & _
+              SEP & "banco do dia " & FmtHM(banco, True)
+        If banco = 0 And dif <> 0 Then txt = txt & " (dentro da tolerância)"
+        lblSug.Caption = txt
+        lblSug.ForeColor = CorSaldo(banco)
+        If banco = 0 Then lblSug.ForeColor = COR_TEXTO
+        Exit Sub
+    End If
+
+    If d = Date Then
+        prefixo = "Saída sugerida hoje: "
+    Else
+        prefixo = "Saída sugerida: "
+    End If
+    sug = mRegra.SaidaSugerida(e, alm)
+    txt = prefixo & HoraTxt(sug) & SEP & "sem afetar o banco entre " & _
+          HoraTxt(sug - tol) & " e " & HoraTxt(sug + tol)
+    If sa >= 0 And r < 0 Then
+        txt = "Retorno às " & HoraTxt(sa + mRegra.AlmocoPadraoMin) & SEP & txt
+    End If
+    lblSug.Caption = txt
+End Sub
+
+Private Sub Salvar()
+    Dim d As Date, dia As clsDia, caixas As Variant, nomes As Variant
+    Dim vals(0 To 3) As Long, i As Long, ult As Long, algum As Boolean
+
+    d = LerData(txtData.Text)
+    If d = 0 Then
+        Msg "Data inválida. Use dd/mm/aaaa.", COR_VERMELHO
+        Exit Sub
+    End If
+
+    caixas = Array(txtEnt, txtSai, txtRet, txtFim)
+    nomes = Array("Entrada", "Saída alm.", "Retorno", "Saída")
+    ult = -1
+    For i = 0 To 3
+        vals(i) = LerHora(caixas(i).Text)
+        If vals(i) = -2 Then
+            Msg "Horário inválido em " & nomes(i) & ".", COR_VERMELHO
+            Exit Sub
+        End If
+        If vals(i) >= 0 Then
+            If vals(i) <= ult Then
+                Msg nomes(i) & " precisa ser depois do horário anterior.", COR_VERMELHO
+                Exit Sub
+            End If
+            ult = vals(i)
+            algum = True
+        End If
+    Next i
+
+    If TipoAtual() = "Normal" And Not algum Then
+        Msg "Preencha ao menos a entrada.", COR_AMARELO
+        Exit Sub
+    End If
+
+    Set dia = New clsDia
+    dia.Data = d
+    dia.Tipo = TipoAtual()
+    dia.Entrada = vals(0)
+    dia.SaidaAlm = vals(1)
+    dia.Retorno = vals(2)
+    dia.Saida = vals(3)
+    dia.Obs = Trim$(txtObs.Text)
+
+    On Error GoTo Falha
+    mRegs.Salvar dia
+    mRegs.Carregar mRegra
+    On Error GoTo 0
+
+    mMarcados(ChaveMes(d)) = True
+    MostrarDia d
+    AtualizarTudo
+    Msg "Dia " & Format$(d, "dd\/mm") & " salvo.", COR_VERDE
+    Exit Sub
+
+Falha:
+    Application.ScreenUpdating = True
+    Msg "Erro ao salvar: " & Err.Description, COR_VERMELHO
+End Sub
+
+' Marca o horário atual no primeiro campo vazio de hoje e salva
+Private Sub BaterAgora()
+    Dim caixas As Variant, i As Long, agora As String
+    If LerData(txtData.Text) <> Date Then MostrarDia Date
+    agora = Format$(Hour(Time), "00") & ":" & Format$(Minute(Time), "00")
+    caixas = Array(txtEnt, txtSai, txtRet, txtFim)
+    For i = 0 To 3
+        If Trim$(caixas(i).Text) = "" Then
+            mCarregando = True
+            caixas(i).Text = agora
+            mCarregando = False
+            Salvar
+            Exit Sub
+        End If
+    Next i
+    Msg "Os quatro horários de hoje já estão marcados.", COR_AMARELO
+End Sub
+
+Private Sub ExcluirDia()
+    Dim d As Date
+    d = LerData(txtData.Text)
+    If d = 0 Then
+        Msg "Data inválida.", COR_VERMELHO
+        Exit Sub
+    End If
+    If mRegs.DiaPorData(d) Is Nothing Then
+        Msg "Não há registro em " & Format$(d, "dd\/mm") & ".", COR_AMARELO
+        Exit Sub
+    End If
+    If MsgBox("Excluir o registro de " & FmtData(d) & "?", vbYesNo + vbQuestion, "Controle de ponto") <> vbYes Then Exit Sub
+    mRegs.Excluir d
+    mRegs.Carregar mRegra
+    MostrarDia d
+    AtualizarTudo
+    Msg "Registro de " & Format$(d, "dd\/mm") & " excluído.", COR_MUTED
+End Sub
+
+Private Sub Msg(ByVal texto As String, Optional ByVal cor As Long = COR_MUTED)
+    lblMsg.Caption = texto
+    lblMsg.ForeColor = cor
+End Sub
+
+' =====================================================================
+'  Painel
+' =====================================================================
+
+Private Function ChaveAnoMes(ByVal mes As Long) As String
+    ChaveAnoMes = Format$(mAno, "0000") & "-" & Format$(mes, "00")
+End Function
+
+Private Sub MarcarMesesComDados()
+    Dim dia As clsDia
+    For Each dia In mRegs.Dias
+        If Year(dia.Data) = mAno Then mMarcados(ChaveMes(dia.Data)) = True
+    Next dia
+End Sub
+
+Private Sub AlternarVisao()
+    mViewDias = Not mViewDias
+    fraPainel.Visible = Not mViewDias
+    fraDias.Visible = mViewDias
+    If mViewDias Then
+        mBtnVerDias.Texto = "Voltar ao painel"
+        AtualizarLista
+    Else
+        mBtnVerDias.Texto = "Ver dias dos meses marcados"
+    End If
+End Sub
+
+Private Sub AtualizarTudo()
+    Dim porMes As Object, dia As clsDia, k As String, total As Long
+    Set porMes = CreateObject("Scripting.Dictionary")
+    total = mRegra.SaldoInicialMin
+    For Each dia In mRegs.Dias
+        k = ChaveMes(dia.Data)
+        If porMes.Exists(k) Then
+            porMes(k) = porMes(k) + dia.BancoMin
+        Else
+            porMes.Add k, dia.BancoMin
+        End If
+        total = total + dia.BancoMin
+    Next dia
+
+    lblSub.Caption = "Jornada " & FmtHM(mRegra.JornadaMin) & SEP & "tolerância " & mRegra.TolMin & _
+                     " min/dia" & SEP & mRegs.Count & " dias registrados" & SEP & "banco " & FmtHM(total, True)
+
+    AtualizarCards porMes
+    AtualizarKpis total
+    AtualizarBarras porMes
+    AtualizarFeriados
+    If mViewDias Then AtualizarLista
+End Sub
+
+Private Sub AtualizarCards(ByVal porMes As Object)
+    Dim i As Long, k As String, v As Long
+    lblAno.Caption = CStr(mAno)
+    For i = 1 To 12
+        k = ChaveAnoMes(i)
+        If porMes.Exists(k) Then
+            v = porMes(k)
+            mCards(i).Mostrar NomeMes(k), FmtHM(v, True), CorSaldo(v), mMarcados.Exists(k)
+        Else
+            mCards(i).Mostrar NomeMes(k), TRACO, COR_APAGADO, mMarcados.Exists(k)
+        End If
+    Next i
+End Sub
+
+Private Sub AtualizarKpis(ByVal total As Long)
+    Dim dia As clsDia, saldo As Long, pos As Long, neg As Long, npos As Long, nneg As Long
+    Dim trab As Long, ndias As Long, prev As Long
+
+    For Each dia In mRegs.Dias
+        If mMarcados.Exists(ChaveMes(dia.Data)) Then
+            saldo = saldo + dia.BancoMin
+            If dia.BancoMin > 0 Then
+                pos = pos + dia.BancoMin
+                npos = npos + 1
+            ElseIf dia.BancoMin < 0 Then
+                neg = neg + dia.BancoMin
+                nneg = nneg + 1
+            End If
+            If dia.Completo Then
+                trab = trab + dia.TrabalhadoMin
+                ndias = ndias + 1
+                If dia.Tipo = "Normal" Then prev = prev + mRegra.JornadaMin
+            End If
+        End If
+    Next dia
+
+    lblK1v.Caption = FmtHM(saldo, True)
+    lblK1v.ForeColor = CorSaldo(saldo)
+    lblK1s.Caption = DescricaoMarcados()
+
+    lblK2p.Caption = "+" & FmtHM(pos)
+    lblK2n.Caption = "-" & FmtHM(Abs(neg))
+    lblK2b.Left = lblK2p.Left + lblK2p.Width + 2
+    lblK2n.Left = lblK2b.Left + lblK2b.Width + 2
+    lblK2s.Caption = npos & " dias +" & SEP & nneg & " dias " & ChrW(&H2013)
+
+    lblK3v.Caption = FmtHM(trab)
+    lblK3s.Caption = ndias & " dias" & SEP & "previsto " & FmtHM(prev)
+
+    lblK4v.Caption = FmtHM(total, True)
+    lblK4v.ForeColor = CorSaldo(total)
+    If mRegra.SaldoInicialMin <> 0 Then
+        lblK4s.Caption = "todos os meses" & SEP & "inicial " & FmtHM(mRegra.SaldoInicialMin, True)
+    Else
+        lblK4s.Caption = "todos os meses"
+    End If
+End Sub
+
+Private Function DescricaoMarcados() As String
+    Dim ks As Variant, n As Long, i As Long, s As String, varios As Boolean
+    ks = ChavesOrdenadas(mMarcados)
+    If IsEmpty(ks) Then
+        DescricaoMarcados = "nenhum mês marcado"
+        Exit Function
+    End If
+    n = UBound(ks) + 1
+    If n > 4 Then
+        DescricaoMarcados = n & " meses marcados"
+        Exit Function
+    End If
+    varios = (Left$(ks(0), 4) <> Left$(ks(n - 1), 4))
+    For i = 0 To n - 1
+        If s <> "" Then s = s & " + "
+        If varios Then
+            s = s & NomeMes(CStr(ks(i)))
+        Else
+            s = s & MesAbrev(CLng(Mid$(ks(i), 6, 2)))
+        End If
+    Next i
+    DescricaoMarcados = s
+End Function
+
+Private Sub AtualizarBarras(ByVal porMes As Object)
+    Dim ks As Variant, n As Long, ini As Long, mostra As Long, i As Long
+    Dim k As String, v As Long, maxAbs As Long, w As Single
+
+    ks = ChavesOrdenadas(mMarcados)
+    If IsEmpty(ks) Then n = 0 Else n = UBound(ks) + 1
+    If n > 12 Then
+        ini = n - 12
+        mostra = 12
+    Else
+        ini = 0
+        mostra = n
+    End If
+
+    maxAbs = 1
+    For i = 1 To mostra
+        k = ks(ini + i - 1)
+        If porMes.Exists(k) Then
+            If Abs(porMes(k)) > maxAbs Then maxAbs = Abs(porMes(k))
+        End If
+    Next i
+
+    For i = 1 To 12
+        If i <= mostra Then
+            k = ks(ini + i - 1)
+            lblBarNome(i).Caption = NomeMes(k)
+            lblBarNome(i).Visible = True
+            lblBarVal(i).Visible = True
+            If porMes.Exists(k) Then
+                v = porMes(k)
+                lblBarVal(i).Caption = FmtHM(v, True)
+                lblBarVal(i).ForeColor = CorSaldo(v)
+            Else
+                v = 0
+                lblBarVal(i).Caption = TRACO
+                lblBarVal(i).ForeColor = COR_APAGADO
+            End If
+            If v = 0 Then
+                lblBar(i).Visible = False
+            Else
+                w = Abs(v) / maxAbs * BAR_MEIO
+                If w < 2 Then w = 2
+                lblBar(i).Width = w
+                If v > 0 Then
+                    lblBar(i).Left = BAR_CENTRO + 1
+                    lblBar(i).BackColor = COR_BARRA_POS
+                Else
+                    lblBar(i).Left = BAR_CENTRO - w
+                    lblBar(i).BackColor = COR_BARRA_NEG
+                End If
+                lblBar(i).Visible = True
+            End If
+        Else
+            lblBarNome(i).Visible = False
+            lblBar(i).Visible = False
+            lblBarVal(i).Visible = False
+        End If
+    Next i
+
+    lblEixo.Visible = (mostra > 0)
+    If mostra > 0 Then lblEixo.Height = mostra * BAR_PASSO
+    lblBarVazio.Visible = (mostra = 0)
+End Sub
+
+Private Sub AtualizarFeriados()
+    Dim ks As Variant, lista As Collection, prox As Collection, it As Variant
+    Dim i As Long, n As Long, linhas As Long, y As Single, a As Long, m As Long
+
+    Set lista = New Collection
+    ks = ChavesOrdenadas(mMarcados)
+    If Not IsEmpty(ks) Then
+        For i = 0 To UBound(ks)
+            a = CLng(Left$(ks(i), 4))
+            m = CLng(Mid$(ks(i), 6, 2))
+            For Each it In mFer.Entre(DateSerial(a, m, 1), DateSerial(a, m + 1, 0))
+                lista.Add it
+            Next it
+        Next i
+    End If
+
+    n = lista.Count
+    If n > FER_MAX Then linhas = FER_MAX Else linhas = n
+    For i = 1 To FER_MAX
+        If i <= linhas Then
+            If i = FER_MAX And n > FER_MAX Then
+                lblFerD(i).Caption = ""
+                lblFerN(i).Caption = "+ " & (n - FER_MAX + 1) & " outros"
+                lblFerN(i).ForeColor = COR_MUTED
+            Else
+                it = lista(i)
+                lblFerD(i).Caption = Format$(CDate(it(0)), "dd\/mm") & " " & DiaSemana(CDate(it(0)))
+                lblFerN(i).Caption = CStr(it(1))
+                lblFerN(i).ForeColor = COR_TEXTO
+            End If
+            lblFerD(i).Visible = True
+            lblFerN(i).Visible = True
+        Else
+            lblFerD(i).Visible = False
+            lblFerN(i).Visible = False
+        End If
+    Next i
+    lblFerVazio.Visible = (n = 0)
+
+    If linhas = 0 Then linhas = 1
+    y = FER_Y + linhas * FER_PASSO + 6
+    lblProxT.Top = y
+    Set prox = mFer.Entre(Date, Date + 366)
+    For i = 1 To 3
+        lblProxD(i).Top = y + 15 + (i - 1) * FER_PASSO
+        lblProxN(i).Top = lblProxD(i).Top
+        If i <= prox.Count Then
+            it = prox(i)
+            lblProxD(i).Caption = Format$(CDate(it(0)), "dd\/mm")
+            lblProxN(i).Caption = CStr(it(1))
+            lblProxD(i).Visible = True
+            lblProxN(i).Visible = True
+        Else
+            lblProxD(i).Visible = False
+            lblProxN(i).Visible = False
+        End If
+    Next i
+End Sub
+
+' =====================================================================
+'  Lista de dias (dias úteis sem registro aparecem como "Sem registro")
+' =====================================================================
+
+Private Sub AtualizarLista()
+    Dim ks As Variant, linhas As Collection, dia As clsDia, r As Variant
+    Dim i As Long, j As Long, a As Long, m As Long, d As Date, prim As Date
+    Dim arr() As Variant, semReg As Long
+
+    Set linhas = New Collection
+    prim = mRegs.PrimeiraData
+    ks = ChavesOrdenadas(mMarcados)
+    If Not IsEmpty(ks) Then
+        For i = 0 To UBound(ks)
+            a = CLng(Left$(ks(i), 4))
+            m = CLng(Mid$(ks(i), 6, 2))
+            For d = DateSerial(a, m, 1) To DateSerial(a, m + 1, 0)
+                Set dia = mRegs.DiaPorData(d)
+                If Not dia Is Nothing Then
+                    linhas.Add LinhaDia(dia)
+                ElseIf Weekday(d, vbMonday) <= 5 And prim > 0 And d >= prim And d < Date Then
+                    If mFer.Nome(d) = "" Then
+                        linhas.Add LinhaVazia(d)
+                        semReg = semReg + 1
+                    End If
+                End If
+            Next d
+        Next i
+    End If
+
+    mCarregando = True
+    mListaN = linhas.Count
+    If mListaN = 0 Then
+        lstDias.Clear
+        lblDiasInfo.Caption = "Nenhum dia nos meses marcados."
+        mCarregando = False
+        Exit Sub
+    End If
+
+    ReDim arr(0 To mListaN - 1, 0 To 11)
+    ReDim mListaDatas(0 To mListaN - 1)
+    For i = 1 To mListaN
+        r = linhas(i)
+        For j = 0 To 11
+            arr(i - 1, j) = r(j)
+        Next j
+        mListaDatas(i - 1) = CDate(r(12))
+    Next i
+    lstDias.List = arr
+    lstDias.TopIndex = mListaN - 1
+    mCarregando = False
+
+    lblDiasInfo.Caption = (mListaN - semReg) & " dias registrados" & SEP & semReg & _
+                          " dia(s) útil(eis) sem registro" & SEP & "clique num dia para editar"
+    If semReg > 0 Then
+        lblDiasInfo.ForeColor = COR_AMARELO
+    Else
+        lblDiasInfo.ForeColor = COR_MUTED
+    End If
+End Sub
+
+Private Function LinhaDia(ByVal dia As clsDia) As Variant
+    Dim a(0 To 12) As Variant
+    a(0) = Format$(dia.Data, "dd\/mm\/yy")
+    a(1) = DiaSemana(dia.Data)
+    a(2) = dia.Tipo
+    a(3) = HoraOuVazio(dia.Entrada)
+    a(4) = HoraOuVazio(dia.SaidaAlm)
+    a(5) = HoraOuVazio(dia.Retorno)
+    a(6) = HoraOuVazio(dia.Saida)
+    If dia.AlmocoMin >= 0 Then a(7) = FmtHM(dia.AlmocoMin) Else a(7) = ""
+    If dia.Completo Then a(8) = FmtHM(dia.TrabalhadoMin) Else a(8) = ""
+    If dia.Completo Or dia.Tipo <> "Normal" Then a(9) = FmtHM(dia.BancoMin, True) Else a(9) = ""
+    a(10) = FmtHM(dia.AcumuladoMin, True)
+    a(11) = dia.Status
+    a(12) = CLng(dia.Data)
+    LinhaDia = a
+End Function
+
+Private Function LinhaVazia(ByVal d As Date) As Variant
+    Dim a(0 To 12) As Variant, j As Long
+    For j = 0 To 11
+        a(j) = ""
+    Next j
+    a(0) = Format$(d, "dd\/mm\/yy")
+    a(1) = DiaSemana(d)
+    a(11) = "Sem registro"
+    a(12) = CLng(d)
+    LinhaVazia = a
+End Function

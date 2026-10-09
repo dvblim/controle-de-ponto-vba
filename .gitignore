@@ -1,0 +1,5 @@
+# Arquivos temporários do Excel
+~$*.xls*
+# Sua planilha pessoal com os registros (não publique seus horários)
+*.xlsm
+!Controle_de_Ponto_modelo.xlsm
