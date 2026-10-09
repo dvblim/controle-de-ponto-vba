@@ -3,6 +3,8 @@
 Painel de controle de ponto e banco de horas para Excel, feito em VBA com **UserForm** e **módulos de classe**.
 Você lança os horários do dia, vê a saída sugerida e acompanha o saldo do banco por mês, tudo num painel escuro dentro do próprio Excel.
 
+![Painel do controle de ponto](docs/painel.jpg)
+
 ## O que o painel faz
 
 - **Lançar ponto:** data, tipo do dia, entrada, saída para o almoço, retorno e saída.
@@ -68,6 +70,7 @@ Já tem uma planilha de ponto própria? O painel funciona com qualquer arquivo q
 
 ```
 Controle_de_Ponto_modelo.xlsx   planilha modelo (tabela vazia, fórmulas e configurações)
+docs/                           imagens do README
 src/
   modInstalador.bas      instalador: cria o formulário, importa os módulos e coloca o botão
   modPainel.bas          abre o painel, cores, formatação de horas e criação de controles
